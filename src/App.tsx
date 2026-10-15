@@ -96,6 +96,7 @@ const [draftSaving, setDraftSaving] = useState(false);
 const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null);
 const [editingOrderId, setEditingOrderId] = useState<number | null>(null);
 const [editingItemTempId, setEditingItemTempId] = useState<number | null>(null);
+const [expandedCustOrders, setExpandedCustOrders] = useState<Record<string, boolean>>({});
 
 // Stock
 const [stockTab, setStockTab] = useState('onhand');
@@ -389,6 +390,7 @@ async function addBranch() {
   }
   if (page === 'orders') {
   fetchOrders(); fetchProducts();
+  fetchInvoices(); fetchPayments();   // <-- ongeza
   if (customers.length === 0) fetchCustomers();
   if (branches.length === 0) fetchBranches();
   if (stockMovements.length === 0) fetchStockMovements();
@@ -402,15 +404,17 @@ async function addBranch() {
   if (staff.length === 0) fetchStaff();
 }
   if (page === 'invoices') {
-    fetchInvoices();
-    if (orders.length === 0) fetchOrders();
-    if (customers.length === 0) fetchCustomers();
-  }
-  if (page === 'deliveries') {
-    fetchDeliveries();
-    if (orders.length === 0) fetchOrders();
-    if (customers.length === 0) fetchCustomers();
-  }
+  fetchInvoices();
+  fetchDeliveries();           
+  if (orders.length === 0) fetchOrders();
+  if (customers.length === 0) fetchCustomers();
+}
+if (page === 'deliveries') {
+  fetchDeliveries();
+  fetchInvoices();             
+  if (orders.length === 0) fetchOrders();
+  if (customers.length === 0) fetchCustomers();
+}
   if (page === 'payments') {
     fetchPayments();
     if (invoices.length === 0) fetchInvoices();
@@ -588,6 +592,63 @@ async function fetchOrders() {
 
 function hasUnackChanges(o: any) {
   return (o.order_changes || []).some((c: any) => !c.acknowledged);
+}
+
+function renderOrderRow(o: any, child: boolean = false) {
+  const statusColors: any = {
+    received: {bg:'#dbeafe',color:'#1d4ed8'},
+    processing: {bg:'#fef9c3',color:'#854d0e'},
+    pending: {bg:'#fee2e2',color:'#dc2626'},
+    ready: {bg:'#d1fae5',color:'#065f46'},
+    dispatched: {bg:'#e0e7ff',color:'#3730a3'},
+    completed: {bg:'#dcfce7',color:'#15803d'},
+    cancelled: {bg:'#f3f4f6',color:'#6b7280'},
+  };
+  const sc = statusColors[o.status] || {bg:'#f3f4f6',color:'#666'};
+  const statusLabels: any = {
+    received: lang==='en'?'Received':'Imepokelewa',
+    processing: lang==='en'?'Processing':'Inashughulikiwa',
+    pending: lang==='en'?'Pending':'Inasubiri',
+    ready: lang==='en'?'Ready':'Tayari',
+    dispatched: lang==='en'?'Dispatched':'Imetumwa',
+    completed: lang==='en'?'Completed':'Imekamilika',
+    cancelled: lang==='en'?'Cancelled':'Imefutwa',
+  };
+  return (
+    <tr key={o.id} style={{borderBottom:'1px solid #f0f0f0',fontSize:'14px',background: child ? '#f9fafb' : 'white'}}>
+      <td style={{padding:'10px 8px',paddingLeft: child ? '32px' : '8px'}}>
+        <span style={{fontWeight:'700',color:'#0a1628',fontFamily:'monospace'}}>{o.order_number}</span>
+      </td>
+      <td style={{padding:'10px 8px'}}>
+        <div style={{fontWeight:'600'}}>{o.customers?.name}</div>
+        <div style={{fontSize:'12px',color:'#666'}}>{o.customers?.type}</div>
+      </td>
+      <td style={{padding:'10px 8px'}}>{o.branches?.name || '-'}</td>
+      <td style={{padding:'10px 8px'}}>
+        <span style={{background:'#f3f4f6',padding:'2px 8px',borderRadius:'12px',fontSize:'12px',fontWeight:'600'}}>
+          {o.order_items?.length || 0} {lang==='en'?'items':'bidhaa'}
+        </span>
+      </td>
+      <td style={{padding:'10px 8px',fontWeight:'600'}}>TSh {(o.total_amount||0).toLocaleString()}</td>
+      <td style={{padding:'10px 8px'}}>
+        <select value={o.status} onChange={e=>updateOrderStatus(o.id, e.target.value)}
+          style={{background:sc.bg,color:sc.color,border:'none',borderRadius:'12px',padding:'4px 8px',fontSize:'12px',fontWeight:'600',cursor:'pointer'}}>
+          {Object.entries(statusLabels).map(([k,v])=>(
+            <option key={k} value={k}>{v as string}</option>
+          ))}
+        </select>
+      </td>
+      <td style={{padding:'10px 8px',fontSize:'12px',color:'#666'}}>{new Date(o.created_at).toLocaleDateString()}</td>
+      <td style={{padding:'10px 8px'}}>
+        <button onClick={()=>setViewingOrder(o)} style={{background:'none',border:'none',color:'#1d4ed8',cursor:'pointer',fontSize:'13px',marginRight:'8px'}}>
+          {lang==='en'?'View':'Ona'}
+        </button>
+        <button onClick={()=>openEditOrder(o)} style={{background:'none',border:'none',color:'#c9a84c',cursor:'pointer',fontSize:'13px',fontWeight:'600'}}>
+          {lang==='en'?'Edit':'Hariri'}
+        </button>
+      </td>
+    </tr>
+  );
 }
 
 function isActiveRequest(o: any) {
@@ -1586,6 +1647,155 @@ async function createInvoice(order: any) {
 async function updateInvoiceStatus(id: number, status: string) {
   await supabase.from('invoices').update({ status }).eq('id', id);
   fetchInvoices();
+}
+
+function deliveryNosForOrder(orderId: any) {
+  return deliveries.filter(d => d.order_id === orderId).map(d => d.delivery_number).filter(Boolean).join(', ');
+}
+function invoiceNoForOrder(orderId: any) {
+  return invoices.find(i => i.order_id === orderId)?.invoice_number || '';
+}
+
+const docTag = (label: string, value: string, bg: string, color: string) => (
+  <div style={{display:'flex',alignItems:'center',gap:'6px',marginBottom:'2px',whiteSpace:'nowrap'}}>
+    <span style={{background:bg,color,fontSize:'9px',fontWeight:800,padding:'1px 5px',borderRadius:'4px',minWidth:'28px',textAlign:'center'}}>{label}</span>
+    <span style={{fontFamily:'monospace',fontSize:'11px',fontWeight:600,color: value ? '#0a1628' : '#cbd5e1'}}>{value || '—'}</span>
+  </div>
+);
+const docNos = (ord: string, inv: string, dlv: string) => (
+  <>
+    {docTag('ORD', ord, '#dbeafe', '#1d4ed8')}
+    {docTag('INV', inv, '#fef3c7', '#92400e')}
+    {docTag('DLV', dlv, '#dcfce7', '#15803d')}
+  </>
+);
+
+async function printInvoice(inv: any) {
+  const { data: cs } = await supabase
+    .from('company_settings').select('*').eq('id', 1).maybeSingle();
+
+  const esc = (v: any) => String(v ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const fmt = (n: number) => Number(n || 0).toLocaleString();
+
+  const cName = cs?.company_name || companyName || 'Joleo Company Limited';
+  const cAddress = cs?.address || '';
+  const cPhone = cs?.phone || '';
+  const cEmail = cs?.email || '';
+
+  const items: any[] = inv.invoice_items || [];
+  const gross = items.reduce((s, it) => s + (Number(it.quantity) * Number(it.unit_price)), 0);
+  const discountTotal = items.reduce((s, it) =>
+    s + (Number(it.quantity) * Number(it.unit_price) * (Number(it.discount || 0) / 100)), 0);
+  const tax = Number(inv.tax || 0);
+  const total = Number(inv.total_amount || (gross - discountTotal + tax));
+
+  const isOrder = !!inv.order_id;
+  const customerHtml = isOrder
+    ? `${esc(inv.customers?.name || '')}<br/>${esc(inv.orders?.order_number || '')}`
+    : 'Walk-In-Customer';
+  const customerPhone = inv.customers?.phone || '';
+
+  const rows = items.map((it, i) => `
+    <tr class="${i % 2 === 0 ? 'shade' : ''}">
+      <td>${i + 1}</td>
+      <td class="left">${esc(it.item_name)}</td>
+      <td>${fmt(it.quantity)}</td>
+      <td>${fmt(it.unit_price)}</td>
+      <td>${Number(it.discount || 0) > 0 ? esc(it.discount) + '%' : '-'}</td>
+      <td>${fmt(it.total_price)}</td>
+    </tr>`).join('');
+
+  const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"/>
+<title>${esc(inv.invoice_number)}</title>
+<style>
+  @page { size: A4; margin: 15mm; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; box-sizing: border-box; }
+  body { font-family: Arial, sans-serif; color: #1e293b; font-size: 13px; margin: 0; }
+
+  .top { display: flex; justify-content: space-between; align-items: flex-start; }
+  .inv-title { font-size: 46px; font-weight: 800; color: #1e40af; letter-spacing: 1px; line-height: 1; }
+  .company { text-align: right; line-height: 1.6; }
+  .company .name { font-size: 18px; font-weight: bold; color: #1e40af; }
+
+  .rule { border: 0; border-top: 3px solid #1e40af; margin: 18px 0; }
+
+  .meta { display: flex; margin-bottom: 22px; }
+  .meta .col { flex: 1; line-height: 1.8; text-align: left; }
+  .meta .divider { width: 2px; background: #1e40af; margin: 0 24px; }
+  .label { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: .5px; }
+  .val { font-weight: bold; }
+
+  table { width: 100%; border-collapse: collapse; }
+  thead tr { background: #1e40af; color: #fff; }
+  th { font-weight: bold; text-align: center; padding: 10px 8px; }
+  td { text-align: center; padding: 9px 8px; border-bottom: 1px solid #dbeafe; font-weight: normal; }
+  th.left, td.left { text-align: left; }
+  tr.shade td { background: #eff6ff; }
+  tbody { border-bottom: 2px solid #1e40af; }
+
+  .totals { margin-top: 16px; margin-left: auto; width: 50%; }
+  .totals .r { display: flex; justify-content: space-between; padding: 5px 8px; }
+  .totals .b { font-weight: bold; }
+  .grand { display: flex; justify-content: space-between; margin-top: 8px; padding: 10px 12px;
+           background: #1e40af; color: #fff; font-weight: bold; font-size: 16px; }
+</style></head>
+<body>
+  <div class="top">
+    <div class="inv-title">INVOICE</div>
+    <div class="company">
+      <div class="name">${esc(cName)}</div>
+      ${cAddress ? `<div>${esc(cAddress)}</div>` : ''}
+      ${cPhone ? `<div>Mobile: ${esc(cPhone)}</div>` : ''}
+      ${cEmail ? `<div>Email: ${esc(cEmail)}</div>` : ''}
+    </div>
+  </div>
+
+  <hr class="rule"/>
+
+  <div class="meta">
+    <div class="col">
+      <div class="label">Invoice No</div>
+      <div class="val">${esc(inv.invoice_number)}</div>
+      <div class="label" style="margin-top:8px">Date</div>
+      <div class="val">${inv.created_at ? new Date(inv.created_at).toLocaleDateString() : ''}</div>
+    </div>
+    <div class="divider"></div>
+    <div class="col">
+      <div class="label">Customer</div>
+      <div class="val">${customerHtml}</div>
+      ${customerPhone ? `<div class="label" style="margin-top:8px">Mobile</div><div class="val">${esc(customerPhone)}</div>` : ''}
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>#</th><th class="left">Item</th><th>Qty</th><th>Price</th><th>Disc</th><th>Total</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>
+
+  <div class="totals">
+    <div class="r b"><span>Subtotal</span><span>TSh ${fmt(gross)}</span></div>
+    ${discountTotal > 0 ? `<div class="r"><span>Discount (-)</span><span>TSh ${fmt(discountTotal)}</span></div>` : ''}
+    ${tax > 0 ? `<div class="r"><span>Tax</span><span>TSh ${fmt(tax)}</span></div>` : ''}
+    <div class="grand"><span>TOTAL</span><span>TSh ${fmt(total)}</span></div>
+  </div>
+
+  <script>window.onload = function(){ window.print(); };</script>
+</body></html>`;
+
+  const w = window.open('', '_blank', 'width=900,height=800');
+  if (!w) {
+    alert(lang === 'en' ? 'Please allow pop-ups to print' : 'Tafadhali ruhusu pop-ups ili uchapishe');
+    return;
+  }
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
 }
 
 // ---------- Deliveries functions ----------
@@ -4519,31 +4729,81 @@ const stockList = registeredList.filter((p: any) => p.in > 0);
             </tr>
           </thead>
           <tbody>
-            {orders.filter(o => !['cancelled'].includes(o.status)).slice(0,10).map(o => {
-              const hasInvoice = invoices.some(inv => inv.order_id === o.id);
-              return (
-                <tr key={o.id} style={{borderBottom:'1px solid #f0f0f0',fontSize:'14px'}}>
-                  <td style={{padding:'8px',fontFamily:'monospace',fontWeight:'700',color:'#0a1628'}}>{o.order_number}</td>
-                  <td style={{padding:'8px'}}>{o.customers?.name}</td>
-                  <td style={{padding:'8px',fontWeight:'600'}}>TSh {(o.total_amount||0).toLocaleString()}</td>
-                  <td style={{padding:'8px'}}>
-                    <span style={{fontSize:'12px',padding:'2px 8px',borderRadius:'12px',
-                      background: hasInvoice?'#dcfce7':'#fef9c3',
-                      color: hasInvoice?'#15803d':'#854d0e',fontWeight:'600'}}>
-                      {hasInvoice?(lang==='en'?'Invoiced':'Imefanyiwa Invoice'):(lang==='en'?'Not Invoiced':'Haijafanyiwa Invoice')}
-                    </span>
-                  </td>
-                  <td style={{padding:'8px',textAlign:'right'}}>
-                    {!hasInvoice && (
-                      <button onClick={()=>setCreatingInvoiceFor(o)}
-                        style={{padding:'6px 14px',background:'#0a1628',color:'white',border:'none',borderRadius:'6px',cursor:'pointer',fontSize:'13px',fontWeight:'bold'}}>
-                        + {lang==='en'?'Create Invoice':'Tengeneza'}
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
+            {(() => {
+  const list = orders.filter(o =>
+    (!orderSearch || o.order_number?.includes(orderSearch) || o.customers?.name?.toLowerCase().includes(orderSearch.toLowerCase())) &&
+    (!orderStatusFilter || o.status === orderStatusFilter)
+  );
+
+  // Kundi kwa mteja (orders ni za karibuni kwanza, kwa hiyo mpangilio unabaki)
+  const groups: Record<string, any[]> = {};
+  const keys: string[] = [];
+  list.forEach(o => {
+    const k = String(o.customer_id);
+    if (!groups[k]) { groups[k] = []; keys.push(k); }
+    groups[k].push(o);
+  });
+
+  return keys.map(k => {
+    const g = groups[k];
+    if (g.length === 1) return renderOrderRow(g[0]);
+
+    const cid = g[0].customer_id;
+    const open = !!expandedCustOrders[k] || !!orderSearch;
+    const totalAmt = g.reduce((s, o) => s + (o.total_amount || 0), 0);
+    const pendingCnt = g.filter(o => ['received','processing','pending'].includes(o.status)).length;
+    const totalItems = g.reduce((s, o) => s + (o.order_items?.length || 0), 0);
+    const lastDate = g[0].created_at;
+
+    const invoiced = invoices.filter(i => i.customer_id === cid).reduce((s, i) => s + (i.total_amount || 0), 0);
+    const paid = payments.filter(p => p.customer_id === cid && p.status === 'confirmed').reduce((s, p) => s + (p.amount || 0), 0);
+    const balance = invoiced - paid;
+
+    return (
+      <React.Fragment key={'cust-' + k}>
+        <tr onClick={() => setExpandedCustOrders(prev => ({ ...prev, [k]: !prev[k] }))}
+          style={{borderBottom:'1px solid #f0f0f0',fontSize:'14px',cursor:'pointer',background: open ? '#eff6ff' : 'white'}}>
+          <td style={{padding:'10px 8px'}}>
+            <span style={{fontWeight:'700',color:'#1d4ed8'}}>{open ? '▾' : '▸'} {g.length} orders</span>
+          </td>
+          <td style={{padding:'10px 8px'}}>
+            <div style={{fontWeight:'700'}}>{g[0].customers?.name}</div>
+            <div style={{fontSize:'12px',color:'#666'}}>{g[0].customers?.type}</div>
+          </td>
+          <td style={{padding:'10px 8px'}}>
+            {new Set(g.map(o => o.branch_id)).size > 1 ? (lang==='en'?'Multiple':'Matawi mengi') : (g[0].branches?.name || '-')}
+          </td>
+          <td style={{padding:'10px 8px'}}>
+            <span style={{background:'#f3f4f6',padding:'2px 8px',borderRadius:'12px',fontSize:'12px',fontWeight:'600'}}>
+              {totalItems} {lang==='en'?'items':'bidhaa'}
+            </span>
+          </td>
+          <td style={{padding:'10px 8px'}}>
+            <div style={{fontWeight:'700'}}>TSh {totalAmt.toLocaleString()}</div>
+            <div style={{fontSize:'11px',color:'#15803d'}}>{lang==='en'?'Paid':'Kilicholipwa'}: TSh {paid.toLocaleString()}</div>
+            <div style={{fontSize:'11px',fontWeight:'700',color: balance > 0 ? '#dc2626' : '#15803d'}}>
+              {lang==='en'?'Balance':'Deni'}: TSh {balance.toLocaleString()}
+            </div>
+          </td>
+          <td style={{padding:'10px 8px'}}>
+            {pendingCnt > 0 ? (
+              <span style={{background:'#fee2e2',color:'#dc2626',padding:'3px 10px',borderRadius:'12px',fontSize:'12px',fontWeight:'600'}}>
+                {pendingCnt} {lang==='en'?'pending':'zinasubiri'}
+              </span>
+            ) : (
+              <span style={{background:'#dcfce7',color:'#15803d',padding:'3px 10px',borderRadius:'12px',fontSize:'12px',fontWeight:'600'}}>
+                {lang==='en'?'All done':'Zote zimekamilika'}
+              </span>
+            )}
+          </td>
+          <td style={{padding:'10px 8px',fontSize:'12px',color:'#666'}}>{new Date(lastDate).toLocaleDateString()}</td>
+          <td style={{padding:'10px 8px'}}></td>
+        </tr>
+        {open && g.map(o => renderOrderRow(o, true))}
+      </React.Fragment>
+    );
+  });
+})()}
           </tbody>
         </table>
       </div>
@@ -4578,8 +4838,7 @@ const stockList = registeredList.filter((p: any) => p.in > 0);
           <table style={{width:'100%',borderCollapse:'collapse',minWidth:'700px'}}>
             <thead>
               <tr style={{textAlign:'left',borderBottom:'2px solid #eee',fontSize:'13px',color:'#666'}}>
-                <th style={{padding:'10px 8px'}}>{lang==='en'?'Invoice #':'Namba'}</th>
-                <th style={{padding:'10px 8px'}}>{lang==='en'?'Order #':'Order'}</th>
+                <th style={{padding:'10px 8px'}}>{lang==='en'?'Document Nos':'Namba za Nyaraka'}</th>
                 <th style={{padding:'10px 8px'}}>{lang==='en'?'Customer':'Mteja'}</th>
                 <th style={{padding:'10px 8px'}}>{lang==='en'?'Total':'Jumla'}</th>
                 <th style={{padding:'10px 8px'}}>{lang==='en'?'Due Date':'Tarehe ya Malipo'}</th>
@@ -4602,8 +4861,9 @@ const stockList = registeredList.filter((p: any) => p.in > 0);
                   const sc = statusColors[inv.status] || {bg:'#f3f4f6',color:'#666'};
                   return (
                     <tr key={inv.id} style={{borderBottom:'1px solid #f0f0f0',fontSize:'14px'}}>
-                      <td style={{padding:'10px 8px',fontWeight:'700',fontFamily:'monospace',color:'#0a1628'}}>{inv.invoice_number}</td>
-                      <td style={{padding:'10px 8px',fontFamily:'monospace',color:'#666'}}>{inv.orders?.order_number}</td>
+                      <td style={{padding:'6px 8px'}}>
+  {docNos(inv.orders?.order_number || '', inv.invoice_number || '', deliveryNosForOrder(inv.order_id))}
+</td>
                       <td style={{padding:'10px 8px',fontWeight:'600'}}>{inv.customers?.name}</td>
                       <td style={{padding:'10px 8px',fontWeight:'600'}}>TSh {(inv.total_amount||0).toLocaleString()}</td>
                       <td style={{padding:'10px 8px',fontSize:'12px',color:'#666'}}>
@@ -4618,10 +4878,10 @@ const stockList = registeredList.filter((p: any) => p.in > 0);
                         </select>
                       </td>
                       <td style={{padding:'10px 8px'}}>
-                        <button onClick={()=>setViewingInvoice(inv)}
-                          style={{background:'none',border:'none',color:'#1d4ed8',cursor:'pointer',fontSize:'13px'}}>
-                          {lang==='en'?'View':'Ona'}
-                        </button>
+                        <button onClick={()=>{ console.log('VIEW INVOICE', inv); setViewingInvoice(inv); }}
+  style={{background:'none',border:'none',color:'#1d4ed8',cursor:'pointer',fontSize:'13px'}}>
+  {lang==='en'?'View':'Ona'}
+</button>
                       </td>
                     </tr>
                   );
@@ -4651,9 +4911,12 @@ const stockList = registeredList.filter((p: any) => p.in > 0);
               <div style={{fontSize:'12px',color:'#666'}}>{viewingInvoice.customers?.phone}</div>
             </div>
             <div style={{background:'#f9fafb',padding:'12px',borderRadius:'8px'}}>
-              <div style={{fontSize:'11px',color:'#666',marginBottom:'4px',textTransform:'uppercase'}}>{lang==='en'?'Order':'Order'}</div>
-              <div style={{fontWeight:'700',fontFamily:'monospace'}}>{viewingInvoice.orders?.order_number}</div>
-              <div style={{fontSize:'12px',color:'#666'}}>{lang==='en'?'Due':'Malipo'}: {viewingInvoice.due_date ? new Date(viewingInvoice.due_date).toLocaleDateString() : '-'}</div>
+              <div style={{background:'#f9fafb',padding:'12px',borderRadius:'8px'}}>
+  <div style={{fontSize:'11px',color:'#666',marginBottom:'6px',textTransform:'uppercase'}}>{lang==='en'?'Document Nos':'Namba za Nyaraka'}</div>
+  {docNos(viewingInvoice.orders?.order_number || '', viewingInvoice.invoice_number || '', deliveryNosForOrder(viewingInvoice.order_id))}
+  <div style={{fontSize:'12px',color:'#666',marginTop:'4px'}}>{lang==='en'?'Due':'Malipo'}: {viewingInvoice.due_date ? new Date(viewingInvoice.due_date).toLocaleDateString() : '-'}</div>
+</div>
+              
             </div>
             <div style={{background:'#f9fafb',padding:'12px',borderRadius:'8px'}}>
               <div style={{fontSize:'11px',color:'#666',marginBottom:'4px',textTransform:'uppercase'}}>Status</div>
@@ -4705,7 +4968,7 @@ const stockList = registeredList.filter((p: any) => p.in > 0);
           </table>
 
           <div style={{display:'flex',justifyContent:'flex-end',gap:'12px'}}>
-            <button onClick={()=>window.print()}
+            <button onClick={()=>printInvoice(viewingInvoice)}
               style={{padding:'10px 20px',background:'#c9a84c',color:'white',border:'none',borderRadius:'8px',cursor:'pointer',fontWeight:'bold'}}>
               🖨️ {lang==='en'?'Print':'Chapisha'}
             </button>
@@ -4883,8 +5146,7 @@ const stockList = registeredList.filter((p: any) => p.in > 0);
           <table style={{width:'100%',borderCollapse:'collapse',minWidth:'700px'}}>
             <thead>
               <tr style={{textAlign:'left',borderBottom:'2px solid #eee',fontSize:'13px',color:'#666'}}>
-                <th style={{padding:'10px 8px'}}>{lang==='en'?'Delivery #':'Namba'}</th>
-                <th style={{padding:'10px 8px'}}>{lang==='en'?'Order #':'Order'}</th>
+                <th style={{padding:'10px 8px'}}>{lang==='en'?'Document Nos':'Namba za Nyaraka'}</th>
                 <th style={{padding:'10px 8px'}}>{lang==='en'?'Customer':'Mteja'}</th>
                 <th style={{padding:'10px 8px'}}>{lang==='en'?'Items':'Bidhaa'}</th>
                 <th style={{padding:'10px 8px'}}>{lang==='en'?'Date':'Tarehe'}</th>
@@ -4906,8 +5168,9 @@ const stockList = registeredList.filter((p: any) => p.in > 0);
                   const sc = statusColors[d.status]||{bg:'#f3f4f6',color:'#666'};
                   return (
                     <tr key={d.id} style={{borderBottom:'1px solid #f0f0f0',fontSize:'14px'}}>
-                      <td style={{padding:'10px 8px',fontWeight:'700',fontFamily:'monospace',color:'#0a1628'}}>{d.delivery_number}</td>
-                      <td style={{padding:'10px 8px',fontFamily:'monospace',color:'#666'}}>{d.orders?.order_number}</td>
+                      <td style={{padding:'6px 8px'}}>
+  {docNos(d.orders?.order_number || '', invoiceNoForOrder(d.order_id), d.delivery_number || '')}
+</td>
                       <td style={{padding:'10px 8px',fontWeight:'600'}}>{d.customers?.name}</td>
                       <td style={{padding:'10px 8px'}}>
                         <span style={{background:'#f3f4f6',padding:'2px 8px',borderRadius:'12px',fontSize:'12px',fontWeight:'600'}}>
@@ -4961,9 +5224,11 @@ const stockList = registeredList.filter((p: any) => p.in > 0);
               <div style={{fontSize:'12px',color:'#666'}}>{viewingDelivery.customers?.phone}</div>
             </div>
             <div style={{background:'#f9fafb',padding:'12px',borderRadius:'8px'}}>
-              <div style={{fontSize:'11px',color:'#666',marginBottom:'4px',textTransform:'uppercase'}}>{lang==='en'?'Order':'Order'}</div>
-              <div style={{fontWeight:'700',fontFamily:'monospace'}}>{viewingDelivery.orders?.order_number}</div>
-              <div style={{fontSize:'12px',color:'#666'}}>{lang==='en'?'Date':'Tarehe'}: {viewingDelivery.delivery_date ? new Date(viewingDelivery.delivery_date).toLocaleDateString() : '-'}</div>
+              <div style={{background:'#f9fafb',padding:'12px',borderRadius:'8px'}}>
+  <div style={{fontSize:'11px',color:'#666',marginBottom:'6px',textTransform:'uppercase'}}>{lang==='en'?'Document Nos':'Namba za Nyaraka'}</div>
+  {docNos(viewingDelivery.orders?.order_number || '', invoiceNoForOrder(viewingDelivery.order_id), viewingDelivery.delivery_number || '')}
+  <div style={{fontSize:'12px',color:'#666',marginTop:'4px'}}>{lang==='en'?'Date':'Tarehe'}: {viewingDelivery.delivery_date ? new Date(viewingDelivery.delivery_date).toLocaleDateString() : '-'}</div>
+</div>
             </div>
             <div style={{background:'#f9fafb',padding:'12px',borderRadius:'8px'}}>
               <div style={{fontSize:'11px',color:'#666',marginBottom:'4px',textTransform:'uppercase'}}>{lang==='en'?'Received By':'Aliyepokea'}</div>
